@@ -1,0 +1,94 @@
+#!/bin/bash
+
+#####################################################################
+#                                                                   #
+#               Compiles Faust programs to CLI alsa                 #
+#               (c) Grame, 2009-2018                                #
+#                                                                   #
+#####################################################################
+
+. faustpath
+. faustoptflags
+. usage.sh
+
+CXXFLAGS=$MYGCCFLAGS
+
+ARCHFILE=$FAUSTARCH/alsa-console.cpp
+
+POLY="POLY"
+NVOICES=-1
+OSCDEFS=""
+
+#-------------------------------------------------------------------
+# Analyze command arguments :
+# faust options                 -> OPTIONS
+# if -omp : -openmp or -fopenmp -> OPENMP
+# existing *.dsp files          -> FILES
+#
+
+# dispatch command arguments
+while [ $1 ] 
+do
+    p=$1
+
+	if [ $p = "-help" ] || [ $p = "-h" ]; then
+        usage faust2alsaconsole "[options] <file.dsp>"
+  		platform Linux
+		require Alsa
+		echo "Compiles Faust programs to CLI alsa"
+		option
+        options -httpd -osc -midi 
+        option "-nvoices <num>"
+        option -arch32 "compiles a 32 bits binary"
+        option -arch64 "compiles a 64 bits binary"
+        exit
+    fi
+    
+    if [ $p = "-nvoices" ]; then
+        POLYDEFS="DEFINES += POLY"
+        shift
+        NVOICES=$1
+        if [ $NVOICES -ge 0 ]; then
+            CXXFLAGS="$CXXFLAGS -DNVOICES=$NVOICES"
+        fi
+    elif [ $p = "-midi" ]; then
+        MIDIDEFS="-DMIDICTRL"
+    elif [ $p = "-osc" ]; then
+	 	OSCDEFS="-DOSCCTRL -lOSCFaust"
+    elif [ $p = "-httpd" ]; then
+		HTTPDEFS="-DHTTPCTRL -lHTTPDFaust -lmicrohttpd"
+    elif [ $p = "-arch32" ]; then
+		PROCARCH="-m32 -L/usr/lib32"
+    elif [ $p = "-arch64" ]; then
+		PROCARCH="-m64"
+    elif [ ${p:0:1} = "-" ]; then
+	    OPTIONS="$OPTIONS $p"
+	elif [[ -f "$p" ]]; then
+	    FILES="$FILES $p"
+	else
+	    OPTIONS="$OPTIONS $p"
+	fi
+	
+shift
+
+done
+
+#-------------------------------------------------------------------
+# compile the *.dsp files using ALSA and GTK on linux
+#
+for f in $FILES; do
+
+	# compile faust to c++
+	faust -i -a $ARCHFILE $OPTIONS "$f" -o "$f.cpp" || exit
+
+	# compile c++ to binary
+	(
+		$CXX $CXXFLAGS $FAUSTTOOLSFLAGS $OMP "$f.cpp" `pkg-config --cflags --libs alsa` $PROCARCH $OSCDEFS $HTTPDEFS $POLYDEFS $MIDIDEFS -lpthread -o "${f%.dsp}"
+	) > /dev/null || exit
+	rm "$f.cpp"
+
+	# collect binary file name for FaustWorks
+	BINARIES="$BINARIES${f%.dsp};"
+done
+
+echo $BINARIES

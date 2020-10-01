@@ -1,0 +1,116 @@
+#! /bin/bash -e
+
+#####################################################################
+#                                                                   #
+#               Compiles Faust programs to alsa-qt                  #
+#               (c) Grame, 2009-2019                                #
+#                                                                   #
+#####################################################################
+
+. faustpath
+. faustoptflags
+. usage.sh
+
+CXXFLAGS=$MYGCCFLAGS
+
+ARCHFILE=$FAUSTARCH/alsa-qt.cpp
+ARCHLIB="-lasound"
+
+if [[ $(uname -s) != Darwin ]]; then
+	LFLAGS+="-no-pie"
+fi
+
+#-------------------------------------------------------------------------------
+# Search for qmake or qmake-qt4
+
+QMAKE=$(which qmake-qt4 || echo qmake) 
+
+#-------------------------------------------------------------------
+# Analyze command arguments :
+# faust options                 -> OPTIONS
+# if -omp : -openmp or -fopenmp -> OPENMP
+# existing *.dsp files          -> FILES
+#
+
+# dispatch command arguments
+
+OSCINC=""
+QTDEFS=""
+OSCLIB=""
+
+for p in $@; do
+    if [ $p = "-help" ] || [ $p = "-h" ]; then
+        usage faust2alqt "[options] <file.dsp>"
+		platform Linux
+		require Alsa, Qt
+		echo "Compiles Faust programs to alsa-qt"
+		option
+        options -httpd -osc -midi -qrcode -poly
+        exit
+    fi
+  
+    if [ $p = "-poly" ]; then
+        POLYDEFS="DEFINES += POLY"
+    elif [ $p = "-midi" ]; then
+        MIDIDEFS="DEFINES += MIDICTRL"
+    elif [ $p = "-osc" ]; then
+		 OSCDEFS="DEFINES += OSCCTRL"
+		 OSCLIBS="-lOSCFaust"
+	elif [ "$p" = "-httpd" ]; then
+		HTTPDEFS="DEFINES += HTTPCTRL"
+		HTTPLIBS="-lHTTPDFaust -lmicrohttpd"
+	elif [ "$p" = "-qrcode" ]; then # requires -httpd
+		QRDEFS="DEFINES += QRCODECTRL"
+    elif [ ${p:0:1} = "-" ]; then
+	    OPTIONS="$OPTIONS $p"
+	elif [[ -f "$p" ]]; then
+	    FILES="$FILES $p"
+	else
+	    OPTIONS="$OPTIONS $p"        
+	fi
+done
+
+#-------------------------------------------------------------------
+# Check darwin specifics
+#
+if [[ $(uname) == Darwin ]]; then
+    SPEC="-spec macx-g++"
+    EXT=".app"
+fi
+
+#-------------------------------------------------------------------
+# compile the *.dsp files
+#
+for p in $FILES; do
+
+    CUR=$(pwd)
+    f=$(basename "$p")
+	SRCDIR=$(dirname "$p")
+
+    # creates a temporary dir 
+    TDR=$(mktemp -d faust.XXXXXX)
+	TMP="$TDR/${f%.dsp}"
+    mkdir "$TMP"
+
+    # compile faust to c++
+	(faust -i -a $ARCHFILE $OPTIONS "$SRCDIR/$f" -o "$TMP/${f%.dsp}.cpp") || exit
+
+    # compile c++ to binary
+    (
+	    cd "$TMP"
+       	$QMAKE -project "QT += widgets printsupport network" "INCLUDEPATH+=$CUR" "INCLUDEPATH+=$FAUSTINC" "QMAKE_CXXFLAGS=$CXXFLAGS -Wno-unused-parameter $FAUSTTOOLSFLAGS" "QMAKE_LFLAGS=$LFLAGS" "LIBS+=$ARCHLIB $OSCLIBS $HTTPLIBS" "HEADERS+=$FAUSTINC/faust/gui/QTUI.h" "RESOURCES+= $FAUSTINC/faust/gui/Styles/Grey.qrc" "$OSCDEFS" "$HTTPDEFS" "$QRDEFS" "$POLYDEFS" "$MIDIDEFS"  
+	    $QMAKE $SPEC QMAKE_CFLAGS_ISYSTEM=-I
+        make
+    ) > /dev/null || exit
+
+    rm -rf "$SRCDIR/${f%.dsp}$EXT"
+    cp -r "$TMP/${f%.dsp}$EXT" "$SRCDIR/${f%.dsp}$EXT"
+    rm -rf "$TDR"
+
+    # collect binary file name for FaustGIDE
+    BINARIES="$BINARIES$SRCDIR/${f%.dsp}$EXT;"
+done
+
+echo $BINARIES
+
+

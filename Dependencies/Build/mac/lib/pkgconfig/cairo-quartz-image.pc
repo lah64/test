@@ -1,0 +1,12 @@
+prefix=/Users/runner/work/1/s/Dependencies/IGraphics/../Build/mac
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: cairo-quartz-image
+Description: Quartz Image surface backend for cairo graphics library
+Version: 1.16.0
+
+Requires: cairo 
+Libs:  
+Cflags: -I${includedir}/cairo 

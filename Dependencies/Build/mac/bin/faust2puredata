@@ -1,0 +1,132 @@
+#! /bin/bash -e
+
+#####################################################################
+#                                                                   #
+#               Compiles Faust programs to puredata                 #
+#               (c) Grame, 2009-2014                                #
+#                                                                   #
+#####################################################################
+
+. faustpath
+. faustoptflags
+. usage.sh
+
+CXXFLAGS=$MYGCCFLAGS
+
+COMPILE=yes
+ARCHFILE=$FAUSTARCH/puredata.cpp
+
+#-------------------------------------------------------------------
+# Analyze command arguments :
+# faust options                 -> OPTIONS
+# if -omp : -openmp or -fopenmp -> OPENMP
+# existing *.dsp files          -> FILES
+#
+
+# dispatch command arguments
+for p in $@; do
+
+	if [ $p = "-help" ] || [ $p = "-h" ]; then
+        usage faust2puredata "[options] [Faust options] <file.dsp>"
+        platform Linux
+        require PureData
+        echo "Compiles Faust programs to PureData"
+        option -arch32 "compile a 32 bits architecture."
+        option -arch64 "compile a 64 bits architecture."
+        option -poly "generates a polyphonic self-contained DSP."
+        option -tosource "skip the C++ compiling step and only generate the C++ source file."
+        option "Faust options"
+        exit
+    fi
+    
+    if [ $p = "-arch32" ]; then
+		PROCARCH="-m32 -L/usr/lib32"
+    elif [ $p = "-poly" ]; then
+		F2PDPOLY="-n 8"
+    elif [ $p = "-arch64" ]; then
+		PROCARCH="-m64"
+    elif [ $p = "-tosource" ]; then
+		COMPILE=no
+    elif [ ${p:0:1} = "-" ]; then
+	    OPTIONS="$OPTIONS $p"
+	elif [[ -f "$p" ]]; then
+	    FILES="$FILES $p"
+	else
+	    OPTIONS="$OPTIONS $p"        
+	fi
+done
+
+#-------------------------------------------------------------------
+# Check darwin specifics
+#
+if [[ $(uname) == Darwin || $CROSSTARGET == Darwin ]]; then
+    LIB="-I$PUREDATA_MACSDK -I. -bundle -undefined suppress -flat_namespace"
+    EXT="~.pd_darwin"
+else
+    LIB="-I$PUREDATA_LINUXSDK -I. -fPIC -shared"
+    EXT="~.pd_linux"
+fi
+
+#-------------------------------------------------------------------
+# compile the *.dsp files
+#
+for p in $FILES; do
+
+    CUR=$(pwd)
+    f=$(basename "$p")
+    SRCDIR=$(dirname "$p")
+
+    # creates a temporary dir 
+    TDR=$(mktemp -d faust.XXXXXX)
+    TMP=$TDR/${f%.dsp}
+    mkdir "$TMP"
+    
+    # case where a foreign C++ function is called in the Faust code (TODO: this is only a quick fix!)
+    count=`ls -1 *.h 2>/dev/null | wc -l`
+    if [ $count != 0 ]; then
+    	cp *.h $TMP
+    fi
+
+    # compile faust to c++ and xml
+    faust -xml "$SRCDIR/$f" -o /dev/null || exit
+    mv "$SRCDIR/$f.xml" $TMP/
+    CXX_SOURCE="$TMP/${f%.dsp}.cpp"
+    faust -i -a $ARCHFILE $OPTIONS "$SRCDIR/$f" -o $CXX_SOURCE || exit
+
+    # compile c++ to binary
+    if [ "$COMPILE" == "yes" ]
+    then
+        (
+        cd "$TMP"
+	CXX_SOURCE=${f%.dsp}.cpp
+        if [[ $(uname) == Darwin || $CROSSTARGET == Darwin ]]; then
+            # On Darwin we build 32-bits and 64-bits plugins combined with lipo
+            $CXX -arch i386 $CXXFLAGS  $FAUSTTOOLSFLAGS $OMP $LIB -Dmydsp=${f%.dsp} -o ${f%.dsp}.i386 $CXX_SOURCE || exit
+            $CXX -arch x86_64 $CXXFLAGS $FAUSTTOOLSFLAGS $OMP $LIB -Dmydsp=${f%.dsp} -o ${f%.dsp}.x86_64 $CXX_SOURCE || exit
+            $LIPO -create "${f%.dsp}.i386" "${f%.dsp}.x86_64"  -output "${f%.dsp}$EXT" || exit
+        else
+            $CXX $CXXFLAGS $FAUSTTOOLSFLAGS $PROCARCH $OMP $LIB -Dmydsp=${f%.dsp} -o ${f%.dsp}$EXT $CXX_SOURCE || exit
+        fi
+        if [ $(which faust2pd) ]; then
+            faust2pd -s $F2PDPOLY $f.xml
+        fi
+        ) > /dev/null || exit
+
+        rm -rf "$SRCDIR/${f%.dsp}$EXT"
+        cp "$TMP/${f%.dsp}$EXT" "$SRCDIR/${f%.dsp}$EXT"
+        # collects all the files produced
+        OUTPUTS="$OUTPUTS$SRCDIR/${f%.dsp}$EXT;"
+        if [ $(which faust2pd)  ]; then
+            cp "$TMP/${f%.dsp}.pd" "$SRCDIR/${f%.dsp}.pd"
+            OUTPUTS="$OUTPUTS$SRCDIR/${f%.dsp}.pd;"
+        fi
+        rm -rf "$TDR"
+    else
+        OUTPUTS="$OUTPUTS $CXX_SOURCE"
+    fi
+
+done
+
+# return the binaries names
+echo "$OUTPUTS"
+

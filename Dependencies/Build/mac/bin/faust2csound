@@ -1,0 +1,78 @@
+#! /bin/bash -e
+#set -x
+
+#####################################################################
+#                                                                   #
+#        Compiles a Faust program into a csound opcode              #
+#               (c) Grame, 2009                                     #
+#                                                                   #
+#####################################################################
+
+. faustpath
+. faustoptflags
+. usage.sh
+
+CXXFLAGS=$MYGCCFLAGS
+
+ARCHFILE=$FAUSTARCH/csound.cpp
+
+#-------------------------------------------------------------------
+# Analyze command arguments :
+# faust options                 -> OPTIONS
+# if -omp : -openmp or -fopenmp -> OPENMP
+# existing *.dsp files          -> FILES
+#
+
+# PHASE 1 : Look for -icc option to force use of intel icc (actually icpc)
+# without having to configure CXX and CXXFLAGS
+
+PATH=$PATH:/usr/local/bin
+
+if [[ $(uname) == Darwin  || $CROSSTARGET == Darwin ]]; then
+    LIB="-I$CSOUND_MACSDK/Headers -I/usr/local/include -L/usr/local/lib -dynamiclib"
+    EXT=".dylib"
+else
+    LIB="-I/usr/include/csound -I/usr/local/include/csound -shared -fPIC"
+    EXT=".so"
+fi
+
+#  dispatch command arguments
+for p in $@; do
+    if [ $p = "-help" ] || [ $p = "-h" ]; then
+        usage faust2csound "[options] [Faust options] <file.dsp>"
+		platform any
+		require CSound Dev Kit
+		echo "Compiles a Faust program into a csound opcode"
+		option
+		option -arch32 "generates a 32 bit architecture."
+		option -arch64 "generates a 64 bit architecture."
+        option "Faust options"
+    	exit
+    fi
+    if [ $p = "-arch32" ]; then
+	PROCARCH="-m32 -L/usr/lib32"
+    elif [ $p = "-arch64" ]; then
+	PROCARCH="-m64"
+    elif [ ${p:0:1} = "-" ]; then
+	    OPTIONS="$OPTIONS $p"
+	elif [[ -f "$p" ]]; then
+	    FILES="$FILES $p"
+	else
+	    OPTIONS="$OPTIONS $p"        
+	fi
+done
+
+#-------------------------------------------------------------------
+# compile the *.dsp files
+#
+for SRC in $FILES; do
+	opname=`basename ${SRC%.dsp}`
+    faust -i -uim -double -a $ARCHFILE $OPTIONS "$SRC" -o "$SRC.cpp"  || exit
+    ${CXX=g++} ${CXXFLAGS=-O3} $FAUSTTOOLSFLAGS  $OMP $LIB -DOPCODE_NAME=$opname "$SRC.cpp" -o "${SRC%.dsp}""$EXT" || exit
+    rm "$SRC.cpp"
+    BINARIES="$BINARIES${SRC%.dsp}""$EXT;"
+done
+
+# return the binaries names
+echo "$BINARIES"
+

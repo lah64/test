@@ -1,0 +1,122 @@
+#! /bin/bash -e
+
+. faustpath
+. faustoptflags
+. usage.sh
+
+CXXFLAGS=$MYGCCFLAGS
+
+ARCHFILE=$FAUSTARCH/netjack-console.cpp
+
+NVOICES=-1
+POLY="POLY"
+EFFECT=""
+
+#-------------------------------------------------------------------
+# Check Darwin specifics
+#
+if [[ $(uname) == Darwin ]]; then
+    ARCHLIB="-L/usr/local/lib -ljacknet -ljack -lpthread -framework CoreAudio -framework CoreMIDI -framework CoreFoundation"
+else
+    ARCHLIB+="-L/usr/local/lib -ljacknet -ljack -lpthread"
+fi
+
+#-------------------------------------------------------------------
+# Analyze command arguments :
+# faust options                 -> OPTIONS
+# existing *.dsp files          -> FILES
+#
+
+while [ $1 ]
+do
+    p=$1
+
+    if [ $p = "-help" ] || [ $p = "-h" ]; then
+        usage faust2netjackconsole "[options] [Faust options] <file.dsp>"
+        require Jack
+        echo "Compiles Faust programs to NetJack"
+        option
+        options -httpd -osc -midi
+        option "-nvoices <num>"
+        option "-effect <effect.dsp>"
+        option "-effect auto"
+        option "Faust options"
+        exit
+    fi
+    
+    if [ $p = "-nvoices" ]; then
+        POLYDEFS="-DPOLY"
+        shift
+        NVOICES=$1
+        if [ $NVOICES -ge 0 ]; then
+            CXXFLAGS="$CXXFLAGS -DNVOICES=$NVOICES"
+        fi
+    elif [ $p = "-effect" ]; then
+        POLYDEFS="-DPOLY2"
+        POLY="POLY2"
+        shift
+        EFFECT=$1
+   elif [ $p = "-osc" ]; then
+	 	OSCDEFS="-DOSCCTRL -lOSCFaust"
+    elif [ $p = "-httpd" ]; then
+	 	HTTPDEFS="-DHTTPCTRL -lHTTPDFaust -lmicrohttpd"
+    elif [ $p = "-midi" ]; then
+        MIDIDEFS="-DMIDICTRL"
+    elif [ ${p:0:1} = "-" ]; then
+	    OPTIONS="$OPTIONS $p"
+	elif [[ -f "$p" ]]; then
+	    FILES="$FILES $p"
+	else
+	    OPTIONS="$OPTIONS $p"
+	fi
+
+shift
+
+done
+
+#-------------------------------------------------------------------
+# compile the *.dsp files
+#
+for f in $FILES; do
+
+    CUR=$(pwd)
+    f=$(basename "$p")
+    SRCDIR=$(dirname "$p")
+
+    # creates a temporary dir
+    TDR=$(mktemp -d faust.XXX)
+    TMP="$TDR/${f%.dsp}"
+    mkdir "$TMP"
+
+    # compile faust to c++
+    if [ $POLY = "POLY2" ]; then
+        if [ $EFFECT = "auto" ]; then
+            cat > $TMP/effect.dsp << EndOfCode
+            adapt(1,1) = _;
+            adapt(2,2) = _,_;
+            adapt(1,2) = _ <: _,_;
+            adapt(2,1) = _,_ :> _;
+            adaptor(F,G) = adapt(outputs(F),inputs(G));
+            process = adaptor(library("$SRCDIR/$f").process, library("$SRCDIR/$f").effect) : library("$SRCDIR/$f").effect;
+EndOfCode
+            faust -i -json -a $ARCHFILE $OPTIONS "$SRCDIR/$f" -o "$TMP/${f%.dsp}.cpp" || exit
+            faust -i -cn effect -a minimal-effect.cpp "$TMP/effect.dsp" -o "$TMP/effect.h" || exit
+            rm "$TMP/effect.dsp"
+        else
+            faust -i -json -a $ARCHFILE $OPTIONS "$SRCDIR/$f" -o "$TMP/${f%.dsp}.cpp" || exit
+            faust -i -cn effect -a minimal-effect.cpp "$SRCDIR/$EFFECT" -o "$TMP/effect.h" || exit
+        fi
+    else
+        faust -i -json -a $ARCHFILE $OPTIONS "$SRCDIR/$f" -o "$TMP/${f%.dsp}.cpp" || exit
+    fi
+
+    # compile c++ to binary
+    $CXX $CXXFLAGS "$TMP/${f%.dsp}.cpp" $FAUSTTOOLSFLAGS $ARCHLIB $OSCDEFS $HTTPDEFS $MIDIDEFS $POLYDEFS -o ${f%.dsp} || exit
+    rm -rf "$TDR"
+
+    # collect binary file name for FaustGIDE
+    BINARIES="$BINARIES${f%.dsp}$EXT;"
+done
+
+echo $BINARIES
+

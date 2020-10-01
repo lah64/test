@@ -1,0 +1,169 @@
+#! /bin/bash -e
+
+#####################################################################
+#                                                                   #
+#               Compiles Faust programs to NetJack and QT           #
+#               (c) Grame, 2009                                     #
+#                                                                   #
+#####################################################################
+
+. faustpath
+. faustoptflags
+. usage.sh
+
+CXXFLAGS=$MYGCCFLAGS
+
+ARCHFILE=$FAUSTARCH/netjack-qt.cpp
+
+NVOICES=-1
+POLY="POLY"
+EFFECT=""
+
+#-------------------------------------------------------------------
+# Check Darwin specifics
+#
+if [[ $(uname) == Darwin ]]; then
+    ARCHLIB="-L/usr/local/lib -ljacknet -ljack -lpthread -framework CoreAudio -framework CoreMIDI -framework CoreFoundation"
+else
+    ARCHLIB+="-L/usr/local/lib -ljacknet -ljack -lpthread"
+fi
+
+#-------------------------------------------------------------------------------
+# Search for qmake or qmake-qt4
+
+QMAKE=$(which qmake-qt4 || echo qmake) 
+
+#-------------------------------------------------------------------
+# Analyze command arguments :
+# faust options                 -> OPTIONS
+# if -omp : -openmp or -fopenmp -> OPENMP
+# existing *.dsp files          -> FILES
+#
+
+# dispatch command arguments
+
+OSCINC=""
+QTDEFS=""
+OSCLIB=""
+
+while [ $1 ]
+do
+    p=$1
+
+    if [ $p = "-help" ] || [ $p = "-h" ]; then
+        usage faust2netjackqt "[options] [Faust options] <file.dsp>"
+        require Jack, Qt
+        echo "Compiles Faust programs to NetJack and QT"
+        option
+        options -httpd -osc -midi
+        option "-nvoices <num>"
+        option "-effect <effect.dsp>"
+        option "-effect auto"
+        option "Faust options"
+        exit
+    fi
+    
+    if [ $p = "-nvoices" ]; then
+        POLYDEFS="DEFINES += POLY"
+        shift
+        NVOICES=$1
+        if [ $NVOICES -ge 0 ]; then
+            CXXFLAGS="$CXXFLAGS -DNVOICES=$NVOICES"
+        fi
+    elif [ $p = "-effect" ]; then
+        POLYDEFS="DEFINES += POLY2"
+        POLY="POLY2"
+        shift
+        EFFECT=$1
+    elif [ $p = "-osc" ]; then
+		 OSCDEFS="DEFINES += OSCCTRL"
+		 OSCLIBS="-lOSCFaust"
+	elif [ "$p" = "-httpd" ]; then
+		HTTPDEFS="DEFINES += HTTPCTRL"
+		HTTPLIBS="-lHTTPDFaust -lmicrohttpd"
+    elif [ $p = "-midi" ]; then
+        MIDIDEFS="DEFINES += MIDICTRL"
+    elif [ ${p:0:1} = "-" ]; then
+	    OPTIONS="$OPTIONS $p"
+	elif [[ -f "$p" ]]; then
+	    FILES="$FILES $p"
+	else
+	    OPTIONS="$OPTIONS $p"        
+	fi
+
+shift
+
+done
+
+#-------------------------------------------------------------------
+# Check darwin specifics
+#
+if [[ $(uname) == Darwin ]]; then
+    SYS_VERSION=$(uname -v | cut -d : -f1 | cut -d. -f1 | cut -d' ' -f4)
+	if [ $SYS_VERSION -gt 12 ]
+	then
+	    SPEC=""
+	    CLANGOPT="QMAKE_MACOSX_DEPLOYMENT_TARGET = 10.9"  
+	    CXXFLAGS="$CXXFLAGS -mmacosx-version-min=10.9"
+	else
+	    SPEC="-spec macx-g++"
+	    CLANGOPT=""
+	fi
+    EXT=".app"
+fi
+
+#-------------------------------------------------------------------
+# compile the *.dsp files
+#
+for p in $FILES; do
+
+    CUR=$(pwd)
+    f=$(basename "$p")
+	SRCDIR=$(dirname "$p")
+
+    # creates a temporary dir 
+    TDR=$(mktemp -d faust.XXX)
+	TMP="$TDR/${f%.dsp}"
+    mkdir "$TMP"
+
+    # compile faust to c++
+    if [ $POLY = "POLY2" ]; then
+        if [ $EFFECT = "auto" ]; then
+            cat > $TMP/effect.dsp << EndOfCode
+            adapt(1,1) = _;
+            adapt(2,2) = _,_;
+            adapt(1,2) = _ <: _,_;
+            adapt(2,1) = _,_ :> _;
+            adaptor(F,G) = adapt(outputs(F),inputs(G));
+            process = adaptor(library("$SRCDIR/$f").process, library("$SRCDIR/$f").effect) : library("$SRCDIR/$f").effect;
+EndOfCode
+            faust -i -json -a $ARCHFILE $OPTIONS "$SRCDIR/$f" -o "$TMP/${f%.dsp}_voice.cpp" || exit
+            faust -i -cn effect -a minimal-effect.cpp "$TMP/effect.dsp" -o "$TMP/effect.h" || exit
+            rm "$TMP/effect.dsp"
+        else
+            faust -i -json -a $ARCHFILE $OPTIONS "$SRCDIR/$f" -o "$TMP/${f%.dsp}_voice.cpp" || exit
+            faust -i -cn effect -a minimal-effect.cpp "$SRCDIR/$EFFECT" -o "$TMP/effect.h" || exit
+        fi
+    else
+        faust -i -json -a $ARCHFILE $OPTIONS "$SRCDIR/$f" -o "$TMP/${f%.dsp}.cpp" || exit
+    fi
+
+    # compile c++ to binary
+    (
+	    cd "$TMP"
+       	$QMAKE -project "QT += widgets printsupport network" "CONFIG+=warn_off" "$CLANGOPT" "INCLUDEPATH+=$CUR" "INCLUDEPATH+=$FAUSTINC" "QMAKE_CXXFLAGS=$CXXFLAGS -Wno-unused-parameter $FAUSTTOOLSFLAGS" "LIBS+=$ARCHLIB $OSCLIBS $HTTPLIBS" "HEADERS+=$FAUSTINC/faust/gui/QTUI.h" "RESOURCES+= $FAUSTINC/faust/gui/Styles/Grey.qrc"  "$OSCDEFS" "$HTTPDEFS" "$MIDIDEFS" "$POLYDEFS"
+	    $QMAKE $SPEC QMAKE_CFLAGS_ISYSTEM=-I
+        make
+    ) > /dev/null || exit
+
+    rm -rf "$SRCDIR/${f%.dsp}$EXT"
+    cp -r "$TMP/${f%.dsp}$EXT" "$SRCDIR/${f%.dsp}$EXT"
+    rm -rf "$TDR"
+
+    # collect binary file name for FaustGIDE
+    BINARIES="$BINARIES$SRCDIR/${f%.dsp}$EXT;"
+done
+
+echo $BINARIES
+
+

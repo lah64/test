@@ -1,0 +1,27 @@
+#! /bin/bash -e
+
+. usage.sh
+
+VIEWER_LAUNCH=${FAUST2FIREFOX_VIEWER_LAUNCH}
+if [[ -z "${VIEWER_LAUNCH}" ]]; then
+    if [[ $(uname) == Darwin ]]; then
+        VIEWER_LAUNCH='open -a Safari'
+    else
+        VIEWER_LAUNCH=xdg-open
+    fi
+fi
+
+if [[ $@ = "-help" ]] || [[ $@ = "-h" ]]; then
+    usage faust2firefox "<file.dsp>"
+    echo "Compiles Faust programs to SVG and opens it with a browser"
+    exit
+fi
+
+faust2svg $@ || exit
+${VIEWER_LAUNCH} ${1%.dsp}-svg/process.svg&
+shift
+for f in $@; do
+    sleep 1
+    ${VIEWER_LAUNCH} ${f%.dsp}-svg/process.svg&
+done
+
